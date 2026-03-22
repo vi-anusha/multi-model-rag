@@ -3,6 +3,8 @@
 
 # Vector database
 db/
+dbv1/
+dbv2/
 
 # Python
 __pycache__/
@@ -23,3 +25,6 @@ Thumbs.db
 
 # Jupyter Notebook
 .ipynb_checkpoints/
+
+# .gitignore
+.gitignore
