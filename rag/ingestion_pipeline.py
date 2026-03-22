@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List
 
 from unstructured.partition.pdf import partition_pdf
+from unstructured.partition.auto import partition
 from unstructured.chunking.title import chunk_by_title
 
 from langchain_core.documents import Document
@@ -10,25 +11,37 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".doc", ".docx", ".md"}
+
+
 def partition_document(file_path: str):
-    """Extract elements from PDF."""
-    print(f"Partitioning document: {file_path}")
+    print(f"\n=== DEBUG: PARTITIONING DOCUMENT ===")
+    print(file_path)
 
-    elements = partition_pdf(
-        filename=file_path,  # Path to your PDF file
-        strategy="hi_res", # Use the most accurate (but slower) processing method of extraction
-        infer_table_structure=True, # Keep tables as structured HTML, not jumbled text
-        extract_image_block_types=["Image"], # Grab images found in the PDF
-        extract_image_block_to_payload=True # Store images as base64 data you can actually use
-    )
+    ext = Path(file_path).suffix.lower()
 
-    print(f"Extracted {len(elements)} elements")
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise ValueError(f"Unsupported file type: {file_path}")
+
+    # Keep notebook-style PDF parsing for PDFs
+    if ext == ".pdf":
+        elements = partition_pdf(
+            filename=file_path,
+            strategy="hi_res",
+            infer_table_structure=True,
+            extract_image_block_types=["Image"],
+            extract_image_block_to_payload=True,
+        )
+    else:
+        # For txt/doc/docx/md
+        elements = partition(filename=file_path)
+
+    print("Extracted elements:", len(elements))
     return elements
 
 
 def create_chunks_by_title(elements):
-    """Create intelligent chunks based on document structure, not just arbitrary character counts."""
-    print("Creating smart chunks...")
+    print("\n=== DEBUG: CREATING CHUNKS ===")
 
     chunks = chunk_by_title(
         elements,
@@ -37,12 +50,11 @@ def create_chunks_by_title(elements):
         combine_text_under_n_chars=500,
     )
 
-    print(f"Created {len(chunks)} chunks")
+    print("Created chunks:", len(chunks))
     return chunks
 
 
 def separate_content_types(chunk):
-    """Analyze what types of content are in a chunk."""
     content_data = {
         "text": chunk.text,
         "tables": [],
@@ -69,7 +81,6 @@ def separate_content_types(chunk):
 
 
 def create_ai_enhanced_summary(text: str, tables: List[str], images: List[str]) -> str:
-    """Create AI-enhanced summary for mixed content."""
     try:
         llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
@@ -116,7 +127,8 @@ SEARCHABLE DESCRIPTION:
         return response.content
 
     except Exception as e:
-        print(f"AI summary failed: {e}")
+        print("\n=== DEBUG: AI SUMMARY FAILED ===")
+        print(e)
         summary = f"{text[:300]}..."
         if tables:
             summary += f" [Contains {len(tables)} table(s)]"
@@ -126,38 +138,41 @@ SEARCHABLE DESCRIPTION:
 
 
 def summarise_chunks(chunks, workspace_id: str, source_type: str, file_path: str):
-    """Attaching app metadata."""
-    print("Processing chunks with AI summaries...")
+    print("\n=== DEBUG: PROCESSING CHUNKS WITH AI SUMMARIES ===")
 
     langchain_documents = []
     total_chunks = len(chunks)
     file_name = Path(file_path).name
+    file_ext = Path(file_path).suffix.lower()
 
     for i, chunk in enumerate(chunks):
-        current_chunk = i + 1
-        print(f"Processing chunk {current_chunk}/{total_chunks}")
+        print(f"\n--- CHUNK {i+1}/{total_chunks} ---")
 
         content_data = separate_content_types(chunk)
 
-        print(f"Types found: {content_data['types']}")
-        print(f"Tables: {len(content_data['tables'])}, Images: {len(content_data['images'])}")
+        print("Types found:", content_data["types"])
+        print("Tables:", len(content_data["tables"]))
+        print("Images:", len(content_data["images"]))
+        print("Raw text preview:", content_data["text"][:400])
 
         if content_data["tables"] or content_data["images"]:
             print("Creating AI summary for mixed content...")
-            try:
-                enhanced_content = create_ai_enhanced_summary(
-                    content_data["text"],
-                    content_data["tables"],
-                    content_data["images"],
-                )
-                print("AI summary created successfully")
-            except Exception as e:
-                print(f"AI summary failed: {e}")
-                enhanced_content = content_data["text"]
+            enhanced_content = create_ai_enhanced_summary(
+                content_data["text"],
+                content_data["tables"],
+                content_data["images"],
+            )
         else:
             enhanced_content = content_data["text"]
 
-        # Creating Langchain document based on the summary and storing original content in metadata
+        print("Enhanced content preview:", enhanced_content[:400])
+
+        original_content = {
+            "raw_text": content_data["text"],
+            "tables_html": content_data["tables"],
+            "images_base64": content_data["images"],
+        }
+
         doc = Document(
             page_content=enhanced_content,
             metadata={
@@ -165,26 +180,29 @@ def summarise_chunks(chunks, workspace_id: str, source_type: str, file_path: str
                 "source_type": source_type,
                 "file_name": file_name,
                 "file_path": file_path,
+                "file_ext": file_ext,
                 "chunk_index": i,
-                "original_content": json.dumps(
-                    {
-                        "raw_text": content_data["text"],
-                        "tables_html": content_data["tables"],
-                        "images_base64": content_data["images"],
-                    }
-                ),
+                "original_content": json.dumps(original_content),
             },
         )
 
+        print("Metadata:", doc.metadata)
         langchain_documents.append(doc)
 
-    print(f"Processed {len(langchain_documents)} chunks")
+    print(f"\n=== DEBUG: TOTAL PROCESSED DOCUMENT CHUNKS = {len(langchain_documents)} ===")
     return langchain_documents
 
 
 def ingest_file(file_path: str, workspace_id: str, source_type: str):
-    """Single entry point for the rest of the app."""
+    print("\n=== DEBUG: INGEST FILE START ===")
+    print("file_path:", file_path)
+    print("workspace_id:", workspace_id)
+    print("source_type:", source_type)
+
     elements = partition_document(file_path)
     chunks = create_chunks_by_title(elements)
     docs = summarise_chunks(chunks, workspace_id, source_type, file_path)
+
+    print("\n=== DEBUG: INGEST FILE COMPLETE ===")
+    print("Generated docs:", len(docs))
     return docs

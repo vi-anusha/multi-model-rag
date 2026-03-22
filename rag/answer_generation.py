@@ -15,22 +15,18 @@ OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 
 
 def _parse_original_content(doc: Document) -> dict:
-    """
-    Read original_content from metadata.
-    Falls back safely if missing or malformed.
-    """
     raw = doc.metadata.get("original_content")
 
     if not raw:
         return {
-            "raw_text": doc.page_content,
+            "raw_text": "",
             "tables_html": [],
             "images_base64": [],
         }
 
     if isinstance(raw, dict):
         return {
-            "raw_text": raw.get("raw_text", doc.page_content),
+            "raw_text": raw.get("raw_text", ""),
             "tables_html": raw.get("tables_html", []),
             "images_base64": raw.get("images_base64", []),
         }
@@ -38,13 +34,17 @@ def _parse_original_content(doc: Document) -> dict:
     try:
         parsed = json.loads(raw)
         return {
-            "raw_text": parsed.get("raw_text", doc.page_content),
+            "raw_text": parsed.get("raw_text", ""),
             "tables_html": parsed.get("tables_html", []),
             "images_base64": parsed.get("images_base64", []),
         }
-    except Exception:
+    except Exception as e:
+        print("\n=== DEBUG: FAILED TO PARSE original_content ===")
+        print(e)
+        print("RAW original_content value:")
+        print(raw)
         return {
-            "raw_text": doc.page_content,
+            "raw_text": "",
             "tables_html": [],
             "images_base64": [],
         }
@@ -78,15 +78,14 @@ Instruction:
 
 Rules:
 - Use only the provided context.
+- Use the raw original chunk content below, not any summarized retrieval text.
 - If the context is insufficient, say so clearly.
 - Do not fabricate skills, projects, outcomes, or numbers.
-- When tables are present, use the table data carefully.
-- When images are present, inspect them before answering.
+- Use tables when present.
+- Inspect images when present.
 
 User request:
 {query}
-
-Retrieved context is provided below source by source.
 """.strip(),
         }
     ]
@@ -98,17 +97,26 @@ Retrieved context is provided below source by source.
         tables_html = original.get("tables_html", [])
         images_base64 = original.get("images_base64", [])
 
-        source_header = f"""
+        print(f"\n=== DEBUG: ORIGINAL CONTENT FOR CHUNK {i} ===")
+        print("file_name:", doc.metadata.get("file_name"))
+        print("source_type:", doc.metadata.get("source_type"))
+        print("chunk_index:", doc.metadata.get("chunk_index"))
+        print("raw_text preview:", raw_text[:300])
+        print("tables count:", len(tables_html))
+        print("images count:", len(images_base64))
+
+        source_text = f"""
 [Source {i}]
 file: {doc.metadata.get("file_name")}
 type: {doc.metadata.get("source_type")}
 chunk_index: {doc.metadata.get("chunk_index")}
+
+RAW TEXT:
+{raw_text}
 """.strip()
 
-        source_text = f"{source_header}\n\nRAW TEXT:\n{raw_text}\n"
-
         if tables_html:
-            source_text += "\nTABLES:\n"
+            source_text += "\n\nTABLES:\n"
             for t_idx, table_html in enumerate(tables_html, start=1):
                 source_text += f"\nTable {t_idx}:\n{table_html}\n"
 
@@ -137,11 +145,37 @@ def answer_query(
     query: str,
     mode: str = "ask",
 ) -> Tuple[str, List[Document]]:
+    print("\n=== DEBUG: QUERY ===")
+    print(query)
+
+    print("\n=== DEBUG: WORKSPACE_ID ===")
+    print(workspace_id)
+
     store = RAGStore()
     retriever = store.get_retriever(workspace_id=workspace_id, k=3)
+
+    # Retrieval uses summarized page_content inside vector store
     chunks = retriever.invoke(query)
 
+    print("\n=== DEBUG: RETRIEVED CHUNKS COUNT ===")
+    print(len(chunks))
+
+    for i, chunk in enumerate(chunks, start=1):
+        print(f"\n--- RETRIEVED CHUNK {i} ---")
+        print("FILE:", chunk.metadata.get("file_name"))
+        print("TYPE:", chunk.metadata.get("source_type"))
+        print("WORKSPACE:", chunk.metadata.get("workspace_id"))
+        print("CHUNK INDEX:", chunk.metadata.get("chunk_index"))
+        print("RETRIEVED PAGE_CONTENT PREVIEW:", chunk.page_content[:300])
+
+    if not chunks:
+        print("\n=== DEBUG: NO CHUNKS RETURNED FROM RETRIEVER ===")
+
+    # Generation uses only original_content from metadata
     message = build_multimodal_message(query=query, docs=chunks, mode=mode)
+
+    print("\n=== DEBUG: FINAL MESSAGE CONTENT COUNT ===")
+    print(len(message.content))
 
     llm = ChatOpenAI(model=OPENAI_CHAT_MODEL, temperature=0)
     answer = llm.invoke([message]).content
