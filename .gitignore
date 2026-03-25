@@ -5,6 +5,8 @@
 db/
 dbv1/
 dbv2/
+data/
+docs/
 
 # Python
 __pycache__/
@@ -19,12 +21,12 @@ venv/
 *.swp
 *.swo
 
+# Chroma DB
+chromadb/
+
 # OS
 .DS_Store
 Thumbs.db
 
 # Jupyter Notebook
 .ipynb_checkpoints/
-
-# .gitignore
-.gitignore
